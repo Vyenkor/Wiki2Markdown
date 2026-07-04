@@ -118,6 +118,6 @@ The generated Markdown can be moved directly into an Obsidian vault.
 - Exporting the same article again will overwrite the existing Markdown file with the same title.
 - SVG and WebP images are saved with their original extensions. Image URLs without a clear extension are saved as `.jpg`.
 
-## 中文小结
+## 中文
 
 Wiki2Markdown 用来抓取维基百科文章和图片，并导出为适合 Obsidian 使用的 Markdown。程序支持图形界面和命令行，能清理页面杂项、下载图片、转换脚注，并把 wiki 词条引用保留为网页链接，避免 Obsidian 打开空白本地笔记。

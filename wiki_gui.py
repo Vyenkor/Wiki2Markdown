@@ -1,178 +1,504 @@
-import wikipedia
-from markdownify import markdownify as md
-from opencc import OpenCC
-from bs4 import BeautifulSoup
-import requests
+from __future__ import annotations
+
+import argparse
 import os
-import threading
-import tkinter as tk
-from tkinter import messagebox
 import re
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+from urllib.parse import unquote, urljoin, urlparse
 
-# 繁体→简体转换器
-cc = OpenCC('t2s')
+import requests
+import tkinter as tk
+from bs4 import BeautifulSoup
+from bs4.element import NavigableString, Tag
+from markdownify import markdownify as html_to_markdown
+from tkinter import filedialog, messagebox
 
-# 正则模式
-REF_HEADING_RE = re.compile(r'^#{1,6}\s*(参考文献|References)', re.IGNORECASE)
-# 匹配脚注引用，如 [[7]](#cite_note-...)
-CITE_RE = re.compile(r"\[\[(\d+)\]\]\(#cite_note-[^)]+\)")
-# 匹配普通外部链接
-LINK_RE = re.compile(r"\[([^\]]+)\]\((?!#)[^)]+\)")
-# 匹配内部锚点链接（#开头）
-ANCHOR_RE = re.compile(r"\[([^\]]+)\]\(#[^)]+\)")
-
-
-def fetch_content(source: str, by_title: bool, lang: str):
-    """按词条或URL获取页面标题和HTML内容"""
-    wikipedia.set_lang(lang)
-    if by_title:
-        page = wikipedia.page(source)
-        return page.title, page.html()
-    resp = requests.get(source)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, 'html.parser')
-    title = soup.find(id='firstHeading').get_text()
-    html = str(soup.find('div', id='mw-content-text'))
-    return title, html
+try:
+    from opencc import OpenCC
+except ImportError:
+    OpenCC = None
 
 
-def process_html(title: str, html: str, lang: str, output_dir: str = 'output') -> str:
-    """
-    清理HTML，下载并重命名图片，转换为Markdown，处理链接与脚注
-    """
-    soup = BeautifulSoup(html, 'html.parser')
-    for span in soup.select('.mw-editsection'):
-        span.decompose()
+APP_TITLE = "Wiki2Markdown"
+DEFAULT_OUTPUT_DIR = "output"
+USER_AGENT = "Wiki2Markdown/2.0 (https://github.com/Vyenkor/Wiki2Markdown)"
 
-    # 下载并本地化图片
-    img_dir = os.path.join(output_dir, 'images')
-    os.makedirs(img_dir, exist_ok=True)
-    for idx, img in enumerate(soup.find_all('img'), start=1):
-        src = img.get('src') or img.get('data-src')
-        if not src:
-            continue
-        url = src if src.startswith('http') else (
-            'https:' + src if src.startswith('//') else f'https://{lang}.wikipedia.org' + src
-        )
-        ext = os.path.splitext(url.split('?')[0])[1]
-        new_name = f"{title.replace('/', '_')}_{idx}{ext}"
-        local_rel = os.path.join('images', new_name)
-        full_path = os.path.join(output_dir, local_rel)
-        try:
-            r = requests.get(url, timeout=10)
-            r.raise_for_status()
-            with open(full_path, 'wb') as f:
-                f.write(r.content)
-            img['src'] = local_rel
-        except Exception:
-            continue
+MEDIA_PREFIXES = (
+    "File:",
+    "Image:",
+    "Category:",
+    "Help:",
+    "Special:",
+    "Wikipedia:",
+    "Portal:",
+    "Template:",
+)
 
-    # 转为Markdown并简体化
-    text = md(str(soup))
-    if lang == 'zh':
-        text = cc.convert(text)
+NOISE_SELECTORS = (
+    "script",
+    "style",
+    "noscript",
+    "form",
+    "input",
+    "button",
+    "nav",
+    "#toc",
+    ".toc",
+    ".vector-toc",
+    ".mw-editsection",
+    ".mw-jump-link",
+    ".mw-indicators",
+    ".noprint",
+    ".nomobile",
+    ".metadata",
+    ".ambox",
+    ".tmbox",
+    ".cmbox",
+    ".ombox",
+    ".fmbox",
+    ".hatnote",
+    ".navbox",
+    ".navbar",
+    ".vertical-navbox",
+    ".sidebar",
+    ".portal",
+    ".sistersitebox",
+    ".printfooter",
+    ".catlinks",
+)
 
-    # 分离正文与参考文献
-    lines = text.splitlines()
-    for i, line in enumerate(lines):
-        if REF_HEADING_RE.match(line):
-            main, ref = '\n'.join(lines[:i]), '\n'.join(lines[i:])
-            break
-    else:
-        main, ref = text, ''
+NAVIGATION_TEXTS = {
+    "首页",
+    "主页",
+    "返回",
+    "回到首页",
+    "上一页",
+    "下一页",
+    "main page",
+    "home",
+    "back",
+    "previous",
+    "next",
+}
 
-    # 去除红链及“页面不存在”提示
-    main = re.sub(r"\[([^\]]+)\]\([^)]*redlink=1[^)]*\)", '', main)
-    main = re.sub(r"&action=edit&redlink=1[^\s]*", '', main)
-    main = re.sub(r"（页面不存在）", '', main)
 
-    # 图片链接转换为 ![[词条_序号]]
-    main = re.sub(
-        r"!\[([^\]]+?)\]\(images/([^\)]+?)\)",
-        lambda m: f"![[{title.replace('/', '_')}_{m.group(2).split('_')[-1].split('.')[0]}]]",
-        main
+@dataclass(frozen=True)
+class WikiPage:
+    title: str
+    html: str
+    base_url: str
+
+
+@dataclass(frozen=True)
+class ExportOptions:
+    source: str
+    mode: str = "title"
+    lang: str = "zh"
+    output_dir: Path = Path(DEFAULT_OUTPUT_DIR)
+    download_images: bool = True
+    convert_chinese: bool = True
+
+
+@dataclass(frozen=True)
+class ExportResult:
+    title: str
+    markdown_path: Path
+    image_count: int
+
+
+class WikiExportError(RuntimeError):
+    pass
+
+
+def make_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+    return session
+
+
+def safe_filename(value: str, fallback: str = "wiki-page") -> str:
+    value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value).strip(" .")
+    value = re.sub(r"\s+", " ", value)
+    return value or fallback
+
+
+def fetch_page(source: str, mode: str, lang: str, session: requests.Session | None = None) -> WikiPage:
+    session = session or make_session()
+    if mode == "title":
+        return fetch_page_by_title(source, lang, session)
+    if mode == "url":
+        return fetch_page_by_url(source, session)
+    raise ValueError(f"Unknown mode: {mode}")
+
+
+def fetch_page_by_title(title: str, lang: str, session: requests.Session) -> WikiPage:
+    api_url = f"https://{lang}.wikipedia.org/w/api.php"
+    response = session.get(
+        api_url,
+        params={
+            "action": "parse",
+            "page": title,
+            "prop": "text|displaytitle",
+            "format": "json",
+            "redirects": "1",
+            "disableeditsection": "1",
+        },
+        timeout=30,
     )
-    # 脚注引用转换，如 [[7]](...) -> $^{7}$
-    main = CITE_RE.sub(lambda m: f"$^{{{m.group(1)}}}$", main)
-    # 移除所有内部锚点链接，转换为加粗文本
-    main = ANCHOR_RE.sub(lambda m: f"**{m.group(1)}**", main)
-    # 外部链接转换为加粗文本
-    main = LINK_RE.sub(lambda m: f"**{m.group(1)}**", main)
+    response.raise_for_status()
+    data = response.json()
+    if "error" in data:
+        info = data["error"].get("info", "Unknown MediaWiki error")
+        raise WikiExportError(info)
 
-    # 参考文献区块处理
-    if ref:
-        ref = re.sub(r"\[([^\]]+)\]\([^)]*redlink=1[^)]*\)", '', ref)
-        ref = CITE_RE.sub(lambda m: f"$^{{{m.group(1)}}}$", ref)
-        ref = ANCHOR_RE.sub(lambda m: f"**{m.group(1)}**", ref)
-        ref = LINK_RE.sub(lambda m: f"**{m.group(1)}**", ref)
-
-    # 写入Markdown文件
-    safe_title = title.replace('/', '_')
-    os.makedirs(output_dir, exist_ok=True)
-    path = os.path.join(output_dir, f"{safe_title}.md")
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write(f"# {title}\n\n{main}\n{ref}")
-    return path
+    parsed = data.get("parse", {})
+    page_title = BeautifulSoup(parsed.get("displaytitle") or title, "html.parser").get_text("", strip=True)
+    html = parsed.get("text", {}).get("*", "")
+    if not html:
+        raise WikiExportError("Wikipedia returned an empty page.")
+    return WikiPage(title=page_title, html=html, base_url=f"https://{lang}.wikipedia.org")
 
 
-def run_export(entry: str, mode: str, lang: str):
-    """
-    启动导出流程
-    """
-    by_title = (mode == 'title')
-    title, html = fetch_content(entry, by_title, lang)
-    return process_html(title, html, lang)
+def fetch_page_by_url(url: str, session: requests.Session) -> WikiPage:
+    response = session.get(url, timeout=30)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    heading = soup.select_one("#firstHeading") or soup.select_one("h1")
+    content = soup.select_one("#mw-content-text .mw-parser-output") or soup.select_one("#bodyContent")
+    if not heading or not content:
+        raise WikiExportError("Could not find the article title or content on this page.")
+    return WikiPage(title=heading.get_text(" ", strip=True), html=str(content), base_url=url)
 
 
-def on_fetch():
-    """GUI 触发：读取输入并启动后台任务"""
-    entry = entry_input.get().strip()
-    if not entry:
-        messagebox.showwarning('输入错误', '请填写词条或URL。')
-        return
-    btn_fetch.config(state='disabled')
-    status_label.config(text='⏳ 处理中…')
+def convert_page_to_markdown(page: WikiPage, options: ExportOptions, session: requests.Session | None = None) -> ExportResult:
+    session = session or make_session()
+    soup = BeautifulSoup(page.html, "html.parser")
+    content = find_article_content(soup)
+    remove_noise(content)
+    normalize_references(content)
+    image_count = localize_images(content, page, options, session) if options.download_images else 0
+    convert_internal_links(content, page.base_url)
 
-    def update_status(status: str):
-        """在主线程更新GUI状态"""
-        status_label.config(text=status)
-        btn_fetch.config(state='normal')
+    markdown = html_to_markdown(str(content), heading_style="ATX", bullets="-")
+    markdown = post_process_markdown(markdown, page.title, options)
 
-    def task():
+    output_dir = Path(options.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    markdown_path = output_dir / f"{safe_filename(page.title)}.md"
+    markdown_path.write_text(markdown, encoding="utf-8")
+    return ExportResult(title=page.title, markdown_path=markdown_path, image_count=image_count)
+
+
+def find_article_content(soup: BeautifulSoup) -> Tag:
+    content = soup.select_one(".mw-parser-output") or soup.select_one("#mw-content-text") or soup
+    if isinstance(content, BeautifulSoup):
+        wrapper = soup.new_tag("div")
+        for child in list(soup.contents):
+            wrapper.append(child.extract())
+        return wrapper
+    return content
+
+
+def remove_noise(content: Tag) -> None:
+    for selector in NOISE_SELECTORS:
+        for node in content.select(selector):
+            node.decompose()
+
+    for node in list(content.find_all(True)):
+        if not isinstance(node, Tag):
+            continue
+        role = (node.get("role") or "").lower()
+        classes = " ".join(node.get("class", [])).lower()
+        if role == "navigation" or "navigation" in classes:
+            node.decompose()
+            continue
+        if node.get_text(" ", strip=True).lower() in NAVIGATION_TEXTS:
+            node.decompose()
+
+
+def normalize_references(content: Tag) -> None:
+    for sup in content.select("sup.reference"):
+        text = sup.get_text(" ", strip=True)
+        match = re.search(r"\d+", text)
+        if match:
+            sup.replace_with(NavigableString(f"$^{{{match.group(0)}}}$"))
+        else:
+            sup.decompose()
+
+
+def localize_images(content: Tag, page: WikiPage, options: ExportOptions, session: requests.Session) -> int:
+    image_dir = Path(options.output_dir) / "images"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    count = 0
+
+    for img in list(content.find_all("img")):
+        if should_skip_image(img):
+            img.decompose()
+            continue
+
+        src = img.get("src") or img.get("data-src")
+        if not src:
+            img.decompose()
+            continue
+
+        image_url = urljoin(page.base_url, src)
+        count += 1
+        filename = build_image_filename(page.title, count, image_url)
+        target_path = image_dir / filename
+
         try:
-            out = run_export(entry, mode_var.get(), lang_var.get())
-            status = f'✅ 成功：{out}'
-        except Exception as e:
-            status = f'❌ 错误：{e}'
-        root.after(0, lambda: update_status(status))
+            response = session.get(image_url, timeout=30)
+            response.raise_for_status()
+            target_path.write_bytes(response.content)
+        except requests.RequestException:
+            count -= 1
+            img.decompose()
+            continue
 
-    threading.Thread(target=task, daemon=True).start()
+        # Keep image embeds pipe-free so they do not split Markdown table cells.
+        img.replace_with(NavigableString(f"\n![[images/{filename}]]\n"))
 
-# GUI 界面初始化
-root = tk.Tk()
-root.title('维基导出工具')
-root.geometry('500x260')
-root.resizable(False, False)
+    return count
 
-frame = tk.Frame(root, padx=15, pady=15)
-frame.pack(fill=tk.BOTH, expand=True)
 
-mode_var = tk.StringVar(value='title')
-tk.Radiobutton(frame, text='按词条搜索', variable=mode_var, value='title').grid(row=0, column=0, sticky='w')
-tk.Radiobutton(frame, text='按页面URL', variable=mode_var, value='url').grid(row=0, column=1, sticky='w')
+def should_skip_image(img: Tag) -> bool:
+    src = (img.get("src") or img.get("data-src") or "").lower()
+    classes = " ".join(img.get("class", [])).lower()
+    width = parse_int(img.get("width"))
+    height = parse_int(img.get("height"))
+    if "mw-file-element" not in classes and width and height and (width < 40 or height < 40):
+        return True
+    return any(token in src for token in ("oojs_ui_icon", "wikimedia-button", "poweredby_mediawiki"))
 
-tk.Label(frame, text='词条或URL：').grid(row=1, column=0, pady=8, sticky='e')
-entry_input = tk.Entry(frame, width=40)
-entry_input.grid(row=1, column=1, columnspan=2, pady=8)
 
-lang_var = tk.StringVar(value='zh')
-tk.Label(frame, text='语言：').grid(row=2, column=0, sticky='e')
-tk.Radiobutton(frame, text='中文', variable=lang_var, value='zh').grid(row=2, column=1)
-tk.Radiobutton(frame, text='English', variable=lang_var, value='en').grid(row=2, column=2)
+def parse_int(value: object) -> int | None:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
 
-btn_fetch = tk.Button(frame, text='开始导出', width=12, command=on_fetch)
-btn_fetch.grid(row=3, column=1, pady=15)
-status_label = tk.Label(frame, text='', wraplength=460, justify='left')
-status_label.grid(row=4, column=0, columnspan=3)
 
-root.mainloop()
+def build_image_filename(title: str, index: int, image_url: str) -> str:
+    path = urlparse(image_url).path
+    ext = Path(path).suffix.lower()
+    if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}:
+        ext = ".jpg"
+    return f"{safe_filename(title)}_{index:03d}{ext}"
+
+
+def convert_internal_links(content: Tag, base_url: str) -> None:
+    for link in list(content.find_all("a")):
+        href = link.get("href") or ""
+        label = link.get_text(" ", strip=True)
+        if not label:
+            link.decompose()
+            continue
+
+        if href.startswith("#"):
+            link.replace_with(NavigableString(label))
+            continue
+
+        if is_wiki_article_link(href, base_url):
+            target = wiki_target_from_href(href)
+            if target:
+                if any(target.startswith(prefix) for prefix in MEDIA_PREFIXES):
+                    link.replace_with(NavigableString(label))
+                elif target == label:
+                    link.replace_with(NavigableString(f"[[{target}]]"))
+                else:
+                    link.replace_with(NavigableString(f"[[{target}|{label}]]"))
+            continue
+
+        if "redlink=1" in href:
+            link.replace_with(NavigableString(label))
+
+
+def is_wiki_article_link(href: str, base_url: str) -> bool:
+    absolute = urljoin(base_url, href)
+    parsed = urlparse(absolute)
+    return parsed.path.startswith("/wiki/")
+
+
+def wiki_target_from_href(href: str) -> str:
+    path = urlparse(href).path
+    if "/wiki/" not in path:
+        return ""
+    target = path.split("/wiki/", 1)[1]
+    return unquote(target).replace("_", " ").strip()
+
+
+def post_process_markdown(markdown: str, title: str, options: ExportOptions) -> str:
+    markdown = markdown.replace("\\[\\[", "[[").replace("\\]\\]", "]]")
+    markdown = restore_non_table_wikilink_pipes(markdown)
+    markdown = markdown.replace("\\_", "_")
+    markdown = re.sub(r"\[\[?(\d+)\]?\]\(#cite_note-[^)]+\)", r"$^{\1}$", markdown)
+    markdown = re.sub(r"\[([^\]]+)\]\(#[^)]+\)", r"\1", markdown)
+    markdown = re.sub(r"\[编辑\]|\[edit\]", "", markdown, flags=re.IGNORECASE)
+    markdown = remove_standalone_navigation_lines(markdown)
+    markdown = re.sub(r"\n{3,}", "\n\n", markdown).strip()
+
+    if options.lang == "zh" and options.convert_chinese and OpenCC is not None:
+        markdown = OpenCC("t2s").convert(markdown)
+
+    return f"# {title}\n\n{markdown}\n"
+
+
+def restore_non_table_wikilink_pipes(markdown: str) -> str:
+    lines: list[str] = []
+    for line in markdown.splitlines():
+        if is_markdown_table_line(line):
+            lines.append(escape_table_wikilink_pipes(line))
+        else:
+            lines.append(line.replace("\\|", "|"))
+    return "\n".join(lines)
+
+
+def escape_table_wikilink_pipes(line: str) -> str:
+    def escape_match(match: re.Match[str]) -> str:
+        text = match.group(0)
+        prefix = "![[" if text.startswith("![[") else "[["
+        inner = text[len(prefix):-2].replace("\\|", "|")
+        escaped_inner = inner.replace("|", "\\|")
+        return f"{prefix}{escaped_inner}]]"
+
+    return re.sub(r"!?\[\[[^\]\n]+?\]\]", escape_match, line)
+
+
+def is_markdown_table_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or "|" not in stripped:
+        return False
+    if re.fullmatch(r"\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?", stripped):
+        return True
+    return stripped.startswith("|") or stripped.endswith("|") or stripped.count("|") >= 2
+
+
+def remove_standalone_navigation_lines(markdown: str) -> str:
+    cleaned: list[str] = []
+    for line in markdown.splitlines():
+        compact = re.sub(r"[*_`\[\]\(\)#\s]+", "", line).lower()
+        if compact in NAVIGATION_TEXTS:
+            continue
+        cleaned.append(line.rstrip())
+    return "\n".join(cleaned)
+
+
+def export_wiki_article(options: ExportOptions) -> ExportResult:
+    session = make_session()
+    page = fetch_page(options.source, options.mode, options.lang, session)
+    return convert_page_to_markdown(page, options, session)
+
+
+def create_gui() -> tk.Tk:
+    root = tk.Tk()
+    root.title(APP_TITLE)
+    root.geometry("620x340")
+    root.resizable(False, False)
+
+    source_var = tk.StringVar()
+    mode_var = tk.StringVar(value="title")
+    lang_var = tk.StringVar(value="zh")
+    output_var = tk.StringVar(value=str(Path(DEFAULT_OUTPUT_DIR).resolve()))
+    images_var = tk.BooleanVar(value=True)
+    status_var = tk.StringVar(value="准备导出维基百科文章。")
+
+    frame = tk.Frame(root, padx=18, pady=16)
+    frame.pack(fill=tk.BOTH, expand=True)
+
+    tk.Label(frame, text="来源：").grid(row=0, column=0, sticky="e", pady=8)
+    tk.Entry(frame, textvariable=source_var, width=58).grid(row=0, column=1, columnspan=3, sticky="w", pady=8)
+
+    tk.Label(frame, text="模式：").grid(row=1, column=0, sticky="e", pady=8)
+    tk.Radiobutton(frame, text="按词条", variable=mode_var, value="title").grid(row=1, column=1, sticky="w")
+    tk.Radiobutton(frame, text="按 URL", variable=mode_var, value="url").grid(row=1, column=2, sticky="w")
+
+    tk.Label(frame, text="语言：").grid(row=2, column=0, sticky="e", pady=8)
+    tk.Radiobutton(frame, text="中文", variable=lang_var, value="zh").grid(row=2, column=1, sticky="w")
+    tk.Radiobutton(frame, text="English", variable=lang_var, value="en").grid(row=2, column=2, sticky="w")
+
+    tk.Label(frame, text="输出目录：").grid(row=3, column=0, sticky="e", pady=8)
+    tk.Entry(frame, textvariable=output_var, width=45).grid(row=3, column=1, columnspan=2, sticky="w", pady=8)
+
+    def choose_output_dir() -> None:
+        selected = filedialog.askdirectory(initialdir=output_var.get() or os.getcwd())
+        if selected:
+            output_var.set(selected)
+
+    tk.Button(frame, text="选择", command=choose_output_dir).grid(row=3, column=3, sticky="w", padx=6)
+    tk.Checkbutton(frame, text="下载并嵌入图片", variable=images_var).grid(row=4, column=1, columnspan=2, sticky="w", pady=8)
+
+    export_button = tk.Button(frame, text="开始导出", width=14)
+    export_button.grid(row=5, column=1, pady=14, sticky="w")
+
+    status_label = tk.Label(frame, textvariable=status_var, wraplength=560, justify="left", anchor="w")
+    status_label.grid(row=6, column=0, columnspan=4, sticky="we", pady=8)
+
+    def set_busy(is_busy: bool) -> None:
+        export_button.config(state=tk.DISABLED if is_busy else tk.NORMAL)
+
+    def run_from_gui() -> None:
+        source = source_var.get().strip()
+        if not source:
+            messagebox.showwarning("缺少来源", "请输入维基百科词条或页面 URL。")
+            return
+
+        options = ExportOptions(
+            source=source,
+            mode=mode_var.get(),
+            lang=lang_var.get(),
+            output_dir=Path(output_var.get()),
+            download_images=images_var.get(),
+        )
+        set_busy(True)
+        status_var.set("正在抓取和转换，请稍候...")
+
+        def worker() -> None:
+            try:
+                result = export_wiki_article(options)
+                message = f"完成：{result.markdown_path}，图片 {result.image_count} 张"
+            except Exception as exc:
+                message = f"失败：{exc}"
+            root.after(0, lambda: (status_var.set(message), set_busy(False)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    export_button.config(command=run_from_gui)
+    return root
+
+
+def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Export Wikipedia articles to Obsidian-friendly Markdown.")
+    parser.add_argument("source", nargs="?", help="Wikipedia title or full page URL.")
+    parser.add_argument("--mode", choices=("title", "url"), default="title", help="How to read source.")
+    parser.add_argument("--lang", default="zh", help="Wikipedia language code, for example zh or en.")
+    parser.add_argument("--output", default=DEFAULT_OUTPUT_DIR, help="Output directory.")
+    parser.add_argument("--no-images", action="store_true", help="Do not download article images.")
+    parser.add_argument("--gui", action="store_true", help="Open the desktop GUI.")
+    return parser.parse_args(argv)
+
+
+def main(argv: Iterable[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.gui or not args.source:
+        create_gui().mainloop()
+        return 0
+
+    result = export_wiki_article(
+        ExportOptions(
+            source=args.source,
+            mode=args.mode,
+            lang=args.lang,
+            output_dir=Path(args.output),
+            download_images=not args.no_images,
+        )
+    )
+    print(f"Exported {result.title} -> {result.markdown_path}")
+    print(f"Images downloaded: {result.image_count}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

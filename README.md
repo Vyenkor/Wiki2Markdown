@@ -1,76 +1,93 @@
-# 项目自述
+# Wiki2Markdown
 
-## 功能概述
+Wiki2Markdown 是一个把维基百科文章导出为 Obsidian 友好 Markdown 的小工具。
 
-本程序是一款基于 **Python** 的 **维基百科文章导出工具**，支持：
+## 主要功能
 
-1. **按词条搜索** 或 **按页面 URL** 两种模式抓取内容。
-2. 将抓取到的 HTML 内容转换为 **Markdown (`.md`)** 格式。
-3. 针对中文页面，自动进行 **繁体→简体** 转换。
-4. 删除页面上的编辑按钮，并将 **内部维基链接** 转换为 `[[…]]` 双链。
-5. 排除多余的媒体文件链接，保留纯文本。
-6. 对所有其他外部链接，替换为 **粗体文本**。
-7. 将脚注格式 `[[1]](#cite_note-1)` 转换为 `$^1$`。
-8. 移除目录中的内部锚点链接，改为粗体文字（例如 `[1 历史发展](#历史发展)` → `**1 历史发展**`）。
-9. 自动下载页面中所有图片，保存在 `output/images/` 目录，并在 Markdown 中使用相对路径引用。
+- 支持按词条名抓取，也支持直接输入维基百科页面 URL。
+- 将维基百科 HTML 正文转换为 Markdown。
+- 将维基内部文章链接转换为 Obsidian 双链，例如 `[[Apple|苹果]]`。
+- 下载正文图片到 `output/images/`，并写成 Obsidian 嵌入格式，例如 `![[images/词条_001.jpg]]`。
+- 将脚注引用转换为 `$^{1}$` 这种 Markdown/Obsidian 可读格式。
+- 清理编辑按钮、目录、导航框、提示框、分类链接、打印页脚等杂乱信息。
+- 中文页面默认进行繁体转简体。
+- 提供 GUI 和命令行两种使用方式。
 
-## 环境与依赖
+## 环境要求
 
-* **Python 版本**：建议使用 Python **3.7+**。
-* **第三方库**：
+- Python 3.10+ 推荐，Python 3.9+ 通常也可运行。
+- Windows 自带的 `tkinter` 用于 GUI。
+- 网络连接，用于访问维基百科和下载图片。
 
-  * `wikipedia`             （抓取维基 API）
-  * `markdownify`           （HTML→Markdown）
-  * `opencc-python-reimplemented` （繁体→简体）
-  * `beautifulsoup4`        （HTML 解析）
-  * `requests`              （网络请求）
-  * `tkinter` （标准库，自带 GUI）
+## 一键安装依赖
 
-### 安装命令
+双击运行：
 
-```bash
-python -m pip install wikipedia markdownify opencc-python-reimplemented beautifulsoup4 requests
+```bat
+install_dependencies.bat
 ```
 
-## 使用说明
+或在 PowerShell 中运行：
 
-1. 将本脚本保存为 **`wiki_gui.py`**。
-2. 在命令行（PowerShell、Terminal 等）中，进入脚本所在目录。
-3. 确保已安装上述依赖。
-4. 运行：
+```powershell
+.\scripts\install_dependencies.ps1
+```
 
-   ```bash
-   python wiki_gui.py
-   ```
-5. 在弹出的窗口中：
+依赖列表在 `requirements.txt`：
 
-   * 选择 **模式**：
+- `beautifulsoup4`
+- `markdownify`
+- `opencc-python-reimplemented`
+- `requests`
 
-     * `按词条搜索`：输入词条名称（中文或英文）。
-     * `按页面 URL`：粘贴完整维基百科页面链接。
-   * 选择 **语言**：`中文` 或 `English`。
-   * 点击 **开始导出**。
-6. 导出完成后，查看 **output/** 目录，获取生成的 `.md` 文件及 `images/` 子目录。
+## 使用方式
+
+打开 GUI：
+
+```bash
+python wiki_gui.py
+```
+
+或显式打开 GUI：
+
+```bash
+python wiki_gui.py --gui
+```
+
+命令行按词条导出：
+
+```bash
+python wiki_gui.py "人工智能" --lang zh --output output
+```
+
+命令行按 URL 导出：
+
+```bash
+python wiki_gui.py "https://zh.wikipedia.org/wiki/人工智能" --mode url --lang zh --output output
+```
+
+不下载图片：
+
+```bash
+python wiki_gui.py "人工智能" --no-images
+```
+
+## 输出结果
+
+默认输出到 `output/`：
+
+```text
+output/
+  人工智能.md
+  images/
+    人工智能_001.jpg
+    人工智能_002.png
+```
+
+生成的 Markdown 可以直接放进 Obsidian vault 使用。
 
 ## 注意事项
 
-* **网络连接**：程序需要联网访问维基百科及下载图片。
-* **防重名**：若多次导出同一词条，会覆盖已有文件。
-* **长页面**：对于大页面，转换过程可能稍慢，请耐心等待。
-* **脚注与参考文献**：仅对可识别的脚注做转换，复杂引用样式可能需人工调整。
-
-## 测试 / Tests
-
-本项目附带 `tests/test_process_html.py`，使用 **pytest** 验证内部锚点会被转换为粗体文字并且脚注格式为 `$^1$`。
-
-The repository includes `tests/test_process_html.py`. Run **pytest** to check that internal anchor links become bold text and footnotes render as `$^1$`.
-
-## 制作者
-
-* **脚本撰写**：ChatGPT （OpenAI GPT-4 mini）
-* **需求及优化**：vyen
-
----
-
-欢迎反馈及改进！
-
+- 维基百科页面结构可能变化，少量复杂模板、表格或参考文献可能仍需要人工整理。
+- 同名词条重复导出会覆盖旧的 `.md` 文件。
+- SVG、WebP 等图片会按原扩展名保存；如果页面图片地址没有扩展名，会默认保存为 `.jpg`。

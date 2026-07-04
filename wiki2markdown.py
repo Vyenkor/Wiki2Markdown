@@ -306,10 +306,8 @@ def convert_internal_links(content: Tag, base_url: str) -> None:
             if target:
                 if any(target.startswith(prefix) for prefix in MEDIA_PREFIXES):
                     link.replace_with(NavigableString(label))
-                elif target == label:
-                    link.replace_with(NavigableString(f"[[{target}]]"))
                 else:
-                    link.replace_with(NavigableString(f"[[{target}|{label}]]"))
+                    link["href"] = wiki_web_url_from_href(href, base_url)
             continue
 
         if "redlink=1" in href:
@@ -328,6 +326,12 @@ def wiki_target_from_href(href: str) -> str:
         return ""
     target = path.split("/wiki/", 1)[1]
     return unquote(target).replace("_", " ").strip()
+
+
+def wiki_web_url_from_href(href: str, base_url: str) -> str:
+    absolute = urljoin(base_url, href)
+    parsed = urlparse(absolute)
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
 
 def post_process_markdown(markdown: str, title: str, options: ExportOptions) -> str:

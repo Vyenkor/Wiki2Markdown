@@ -1,93 +1,123 @@
 # Wiki2Markdown
 
-Wiki2Markdown 是一个把维基百科文章导出为 Obsidian 友好 Markdown 的小工具。
+![Wiki2Markdown preview](docs/images/wiki-to-markdown.png)
 
-## 主要功能
+> Crawl wiki encyclopedia images and articles, then convert wiki articles into Markdown.
 
-- 支持按词条名抓取，也支持直接输入维基百科页面 URL。
-- 将维基百科 HTML 正文转换为 Markdown。
-- 将维基内部文章链接转换为 Obsidian 双链，例如 `[[Apple|苹果]]`。
-- 下载正文图片到 `output/images/`，并写成 Obsidian 嵌入格式，例如 `![[images/词条_001.jpg]]`。
-- 将脚注引用转换为 `$^{1}$` 这种 Markdown/Obsidian 可读格式。
-- 清理编辑按钮、目录、导航框、提示框、分类链接、打印页脚等杂乱信息。
-- 中文页面默认进行繁体转简体。
-- 提供 GUI 和命令行两种使用方式。
+Wiki2Markdown exports Wikipedia articles into Markdown that works well in Obsidian. It keeps article images local, removes common page noise, and preserves wiki references as web links so Obsidian does not open empty local notes.
 
-## 环境要求
+## Features
 
-- Python 3.10+ 推荐，Python 3.9+ 通常也可运行。
-- Windows 自带的 `tkinter` 用于 GUI。
-- 网络连接，用于访问维基百科和下载图片。
+- Fetch by Wikipedia article title or by full page URL.
+- Convert Wikipedia article HTML into Markdown.
+- Keep internal wiki article references as web links, for example `[Apple](https://en.wikipedia.org/wiki/Apple)`.
+- Download article images to `output/images/` and embed them with Obsidian syntax, for example `![[images/article_001.jpg]]`.
+- Convert footnote references into readable Markdown text such as `$^{1}$`.
+- Remove edit buttons, tables of contents, navigation boxes, notices, category links, print footers, and other common page clutter.
+- Convert Traditional Chinese to Simplified Chinese for Chinese pages by default.
+- Provide both GUI and command-line usage.
 
-## 一键安装依赖
+## Repository Layout
 
-双击运行：
+```text
+Wiki2Markdown/
+  wiki2markdown.py                  # Main GUI and CLI program
+  requirements.txt                  # Runtime dependencies
+  install_dependencies.bat          # Windows one-click installer
+  scripts/
+    install_dependencies.ps1        # PowerShell installer
+  docs/
+    images/
+      wiki-to-markdown.png          # README preview image
+```
+
+Generated files are written to `output/`, which is ignored by Git.
+
+## Requirements
+
+- Python 3.10+ recommended. Python 3.9+ should usually work.
+- `tkinter` for the desktop GUI. It is included with most Windows Python installations.
+- Internet access for Wikipedia pages and image downloads.
+
+## Install Dependencies
+
+Double-click on Windows:
 
 ```bat
 install_dependencies.bat
 ```
 
-或在 PowerShell 中运行：
+Or run in PowerShell:
 
 ```powershell
 .\scripts\install_dependencies.ps1
 ```
 
-依赖列表在 `requirements.txt`：
+The runtime dependencies are listed in `requirements.txt`:
 
 - `beautifulsoup4`
 - `markdownify`
 - `opencc-python-reimplemented`
 - `requests`
 
-## 使用方式
+## Usage
 
-打开 GUI：
-
-```bash
-python wiki_gui.py
-```
-
-或显式打开 GUI：
+Open the GUI:
 
 ```bash
-python wiki_gui.py --gui
+python wiki2markdown.py
 ```
 
-命令行按词条导出：
+Open the GUI explicitly:
 
 ```bash
-python wiki_gui.py "人工智能" --lang zh --output output
+python wiki2markdown.py --gui
 ```
 
-命令行按 URL 导出：
+Export by article title:
 
 ```bash
-python wiki_gui.py "https://zh.wikipedia.org/wiki/人工智能" --mode url --lang zh --output output
+python wiki2markdown.py "Artificial intelligence" --lang en --output output
 ```
 
-不下载图片：
+Export a Chinese article:
 
 ```bash
-python wiki_gui.py "人工智能" --no-images
+python wiki2markdown.py "人工智能" --lang zh --output output
 ```
 
-## 输出结果
+Export by full URL:
 
-默认输出到 `output/`：
+```bash
+python wiki2markdown.py "https://zh.wikipedia.org/wiki/人工智能" --mode url --lang zh --output output
+```
+
+Export without downloading images:
+
+```bash
+python wiki2markdown.py "Artificial intelligence" --lang en --no-images
+```
+
+## Output
+
+Default output structure:
 
 ```text
 output/
-  人工智能.md
+  Artificial intelligence.md
   images/
-    人工智能_001.jpg
-    人工智能_002.png
+    Artificial intelligence_001.jpg
+    Artificial intelligence_002.png
 ```
 
-生成的 Markdown 可以直接放进 Obsidian vault 使用。
+The generated Markdown can be moved directly into an Obsidian vault.
 
-## 注意事项
+## Notes
 
-- 维基百科页面结构可能变化，少量复杂模板、表格或参考文献可能仍需要人工整理。
-- 同名词条重复导出会覆盖旧的 `.md` 文件。
-- SVG、WebP 等图片会按原扩展名保存；如果页面图片地址没有扩展名，会默认保存为 `.jpg`。
+- Wikipedia page structures vary. Complex templates, tables, or references may still need manual cleanup.
+- Exporting the same article again will overwrite the existing Markdown file with the same title.
+- SVG and WebP images are saved with their original extensions. Image URLs without a clear extension are saved as `.jpg`.
+
+## 中文小结
+
+Wiki2Markdown 用来抓取维基百科文章和图片，并导出为适合 Obsidian 使用的 Markdown。程序支持图形界面和命令行，能清理页面杂项、下载图片、转换脚注，并把 wiki 词条引用保留为网页链接，避免 Obsidian 打开空白本地笔记。
